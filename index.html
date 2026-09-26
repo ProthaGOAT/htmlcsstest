@@ -187,6 +187,12 @@ table.yn td.is-wrong{background:var(--red-soft)}
 <div class="wrap" id="app"></div>
 <div class="sr" aria-live="polite" id="live"></div>
 <script>
+/* ===== TEACHER SETUP =====
+   Paste your Google Apps Script web app URL between the quotes below.
+   Leave it empty ('') to turn score reporting off. */
+const REPORT_URL='';
+/* ========================= */
+
 const DOMAINS={1:"HTML fundamentals",2:"CSS fundamentals",3:"Document structure using HTML",4:"Multimedia presentation using HTML",5:"Webpage styling using CSS",6:"Accessibility, readability, and testing"};
 
 /* t: s = single choice, m = multiple choice, d = drop-downs in code, y = yes/no statements */
@@ -661,7 +667,7 @@ function home(msg){
     <form class="panel" id="setup" novalidate>
       <div class="field" style="margin-bottom:1.5rem">
         <label for="sname">Your name</label>
-        <input id="sname" autocomplete="name" value="${esc(p.name||'')}" placeholder="Shown on your results">
+        <input id="sname" autocomplete="name" value="${esc(p.name||'')}" placeholder="${REPORT_URL?'Full name (required)':'Shown on your results'}">
       </div>
       <fieldset>
         <legend>Mode</legend>
@@ -712,6 +718,7 @@ function home(msg){
     const nv=$('#count').value;
     const mins=Math.min(240,Math.max(1,parseInt($('#mins').value,10)||50));
     const name=$('#sname').value.trim();
+    if(REPORT_URL&&!name){$('#err').textContent='Type your full name so your teacher gets your score.';$('#sname').focus();return}
     savePrefs({name,mode,domains,n:nv,mins});
     const n=nv==='all'?9999:+nv;
     start(makeItems(pick(domains,n)),mode,mins,name);
@@ -859,6 +866,68 @@ function quiz(){
   });
 }
 
+/* ---------- score reporting ---------- */
+function sendReport(){
+  const byD={1:[0,0],2:[0,0],3:[0,0],4:[0,0],5:[0,0],6:[0,0]};
+  S.items.forEach((it,i)=>{const d=byD[it.q.d];d[1]++;if(isRight(it.q,S.ans[i]))d[0]++});
+  const dom=k=>byD[k][1]?byD[k][0]+'/'+byD[k][1]:'';
+  const payload={name:S.name,mode:S.mode==='exam'?'Exam':'Practice',right:S.result.right,total:S.result.total,pct:S.result.pct,
+    time:fmt(S.end-S.begin),timeUp:S.timeUp?'Yes':'No',d1:dom(1),d2:dom(2),d3:dom(3),d4:dom(4),d5:dom(5),d6:dom(6),
+    missed:S.items.map((it,i)=>isRight(it.q,S.ans[i])?null:it.q.o+' (Q'+it.q.id+')').filter(Boolean).join(', ')};
+  S.payload=payload;
+  fetch(REPORT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
+    .then(()=>{S.report='sent'})
+    .catch(()=>{S.report='failed'})
+    .finally(()=>{const el=$('#reportStatus');if(el)el.outerHTML=reportHTML();const rs=$('#resend');if(rs)rs.onclick=()=>{S.report='sending';$('#reportStatus').outerHTML=reportHTML();sendReport()}});
+}
+function reportHTML(){
+  if(!S||S.report==='off')return '';
+  const m={sending:'Sending your score to your teacher…',sent:'Your score has been sent to your teacher.',failed:'Your score could not be sent. Check your internet connection and try again, or screenshot this page.'};
+  return `<p id="reportStatus" class="lede" role="status" style="color:${S.report==='failed'?'var(--red)':S.report==='sent'?'var(--green)':'var(--muted)'};font-weight:700">${m[S.report]}${S.report==='failed'?' <button class="btn ghost" type="button" id="resend">Try again</button>':''}</p>`;
+}
+
+/* ---------- results summary for the teacher ---------- */
+const plain=t=>String(t).replace(/\[\[|\]\]/g,'');
+function answerText(q,a){
+  const none='(no answer)';
+  if(q.t==='s')return {mine:a==null?none:plain(q.opts[a]),right:plain(q.opts[q.a])};
+  if(q.t==='m')return {mine:a.length?a.map(k=>plain(q.opts[k])).join(' + '):none,right:q.a.map(k=>plain(q.opts[k])).join(' + ')};
+  if(q.t==='d')return {mine:q.b.map((b,k)=>'Blank '+(k+1)+': '+(a[k]>=0?b.o[a[k]]:none)).join('; '),right:q.b.map((b,k)=>'Blank '+(k+1)+': '+b.o[b.a]).join('; ')};
+  if(q.t==='y')return {mine:q.opts.map((st,k)=>'S'+(k+1)+' '+(a[k]==null?'-':a[k]?'Yes':'No')).join(', '),right:q.opts.map((st,k)=>'S'+(k+1)+' '+(q.a[k]?'Yes':'No')).join(', ')};
+  return {mine:'',right:''};
+}
+function resultsText(){
+  const {right,total,pct}=S.result;
+  const L=[];
+  L.push('HTML & CSS practice test results');
+  L.push('Name: '+(S.name||'(no name)'));
+  L.push('Date: '+new Date(S.end).toLocaleString());
+  L.push('Mode: '+(S.mode==='exam'?'Exam simulation':'Practice')+', time used '+fmt(S.end-S.begin)+(S.timeUp?' (time ran out)':''));
+  L.push('Score: '+right+'/'+total+' ('+pct+'%)');
+  L.push('');
+  L.push('BY DOMAIN');
+  const byD={};S.items.forEach((it,i)=>{const d=it.q.d;byD[d]=byD[d]||[0,0];byD[d][1]++;if(isRight(it.q,S.ans[i]))byD[d][0]++});
+  Object.keys(byD).sort().forEach(d=>L.push(d+'. '+DOMAINS[d]+': '+byD[d][0]+'/'+byD[d][1]));
+  const wrong=S.items.map((it,i)=>({it,i})).filter(x=>!isRight(x.it.q,S.ans[x.i]));
+  L.push('');
+  L.push(wrong.length?'WRONG ANSWERS ('+wrong.length+')':'No wrong answers.');
+  wrong.forEach(({it,i},n)=>{
+    const q=it.q,a=S.ans[i],t=answerText(q,a);
+    L.push('');
+    L.push((n+1)+') Objective '+q.o+', question '+q.id);
+    L.push(plain(q.q));
+    if(q.c)L.push(q.c.replace(/\{\{=?\d+\}\}/g,'___').split('\n').map(x=>'    '+x).join('\n'));
+    if(q.t==='y')q.opts.forEach((st,k)=>L.push('  S'+(k+1)+': '+plain(st)));
+    L.push('Their answer: '+t.mine);
+    L.push('Correct answer: '+t.right);
+  });
+  return L.join('\n');
+}
+async function copyText(t){
+  try{await navigator.clipboard.writeText(t);return true}catch(e){}
+  try{const ta=document.createElement('textarea');ta.value=t;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();const ok=document.execCommand('copy');ta.remove();return ok}catch(e){return false}
+}
+
 /* ---------- results ---------- */
 function finish(timeUp){
   clearInterval(timerId);
@@ -868,7 +937,9 @@ function finish(timeUp){
   const pct=Math.round(right/total*100);
   const h=loadHist();h.unshift({date:S.end,name:S.name,mode:S.mode,right,total,pct});saveHist(h);
   S.result={right,total,pct};S.filter='all';
+  S.report=REPORT_URL?'sending':'off';
   results();window.scrollTo({top:0});
+  if(REPORT_URL)sendReport();
 }
 function results(){
   const {right,total,pct}=S.result;
@@ -880,6 +951,17 @@ function results(){
   <h1>${S.name?esc(S.name)+'’s results':'Your results'}</h1>
   ${S.timeUp?`<p class="lede">Time ran out, so the test was submitted automatically.</p>`:''}
   <div class="score"><span class="pct">${pct}%</span><span class="of">${right} of ${total} correct, ${S.mode==='exam'?'exam simulation':'practice'}, ${fmt(used)} used</span></div>
+  ${reportHTML()}
+  <div class="panel" style="margin:1.25rem 0">
+    <h2>Send your results to your teacher</h2>
+    <p style="margin-bottom:.9rem">This sends your score and every question you got wrong, with your answer and the correct one.</p>
+    <div class="actions" style="margin:0">
+      ${navigator.share?'<button class="btn" type="button" id="shareRes">Send to teacher</button>':''}
+      <button class="btn ${navigator.share?'ghost':''}" type="button" id="copyRes">Copy results</button>
+      <span id="copyMsg" role="status" style="font-weight:700;color:var(--green)"></span>
+    </div>
+    ${navigator.share?'':'<p class="hint">After copying, paste it into WhatsApp, email or a text message to your teacher.</p>'}
+  </div>
   <div class="actions">
     ${missed.length?`<button class="btn" type="button" id="retry">Practise the ${missed.length} I missed</button>`:''}
     <button class="btn ghost" type="button" id="again">Start a new test</button>
@@ -901,6 +983,9 @@ function results(){
   </div>`;
   const r=$('#retry');if(r)r.onclick=()=>{const qs=missed.map(i=>S.items[i].q);start(makeItems(shuffle(qs)),'practice',0,S.name);window.scrollTo({top:0})};
   $('#again').onclick=()=>{home();window.scrollTo({top:0})};
+  const sh=$('#shareRes');if(sh)sh.onclick=async()=>{try{await navigator.share({title:'HTML & CSS test results',text:resultsText()})}catch(e){if(e&&e.name!=='AbortError'){const ok=await copyText(resultsText());$('#copyMsg').textContent=ok?'Sharing isn\u2019t available, so your results were copied. Paste them into a message to your teacher.':'Could not copy. Please screenshot this page.'}}};
+  $('#copyRes').onclick=async()=>{const ok=await copyText(resultsText());$('#copyMsg').textContent=ok?'Copied. Paste it into a message to your teacher.':'Could not copy. Please screenshot this page.';if(!ok)$('#copyMsg').style.color='var(--red)'};
+  const rs=$('#resend');if(rs)rs.onclick=()=>{S.report='sending';$('#reportStatus').outerHTML=reportHTML();sendReport()};
   document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{S.filter=b.dataset.f;results()});
 }
 
